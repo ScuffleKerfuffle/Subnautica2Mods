@@ -182,7 +182,7 @@ local function RegisterLockers()
 
         ::continue::
     end
-
+    Log(string.format("Finished registering lockers. Found %d lockers with correct label.", #lockersWithCorrectLabel))
 end
 
 --#endregion
@@ -386,7 +386,6 @@ local function OnActorDestroyed(Context)
     end
 end
 
-
 --This is intended to catch when a game starts or is loaded.
 --The delayed start is to give the farms and lockers a chance to load in.
 local function OnClientRestart()
@@ -405,21 +404,9 @@ end
 
 --This is intended to catch when a locker label is changed, so we can update our list of valid lockers to transfer to based on the new label text.
 local function OnTextChanged(Context, Params)
-    local signComponent = Context:get()
-    local lockerActor = signComponent:GetOwner()
-
-    -- Params.NewText contains the FText structure submitted by the player
-    local newTextString = Params.NewText:get():ToString()
-    local oldTextString = Params.OldText:get():ToString()
-
-    -- Ensure we are dealing with a locker (filters out signs, beacons, beacons etc.)
-    if lockerActor then
-        local actorName = lockerActor:GetClass():GetName()
-        if string.find(actorName, "Locker") then
-            Log(string.format("Sign text changed on actor '%s'. Old text: '%s', New text: '%s'", lockerActor:GetName(), oldTextString, newTextString))
-            RegisterLockers() -- Re-register lockers to update our list of valid targets based on the new label text
-        end
-    end
+        ExecuteWithDelay(100,function()
+            RegisterLockers()
+        end)
 end
 
 --#endregion
@@ -432,15 +419,13 @@ local function RunUsingDelay()
     ExecuteWithDelay(2000, RunUsingDelay) -- Schedule the next execution after 2 seconds. Going with this to halve the number of calls, but still collect in a reasonable timeframe.
 end
 
-do
-    --Register all hooks and notifications
-    RegisterHook("/Script/Engine.PlayerController:ClientRestart", OnClientRestart)
-    RegisterHook("/Script/Engine.Actor:K2_DestroyActor", OnActorDestroyed)
-    RegisterHook("/Script/UMG.EditableText:SetText", OnTextChanged)
-    NotifyOnNewObject("/Game/Blueprints/Farming/BP_MetalFarm.BP_MetalFarm_C", OnMetalFarmCreated)
+--Register all hooks and notifications
+RegisterHook("/Script/Engine.PlayerController:ClientRestart", OnClientRestart)
+RegisterHook("/Script/Engine.Actor:K2_DestroyActor", OnActorDestroyed)
+RegisterHook("/Script/UWEUserGeneratedContent.UWEUGCComponent:ServerSetPlayerText", OnTextChanged)
+NotifyOnNewObject("/Game/Blueprints/Farming/BP_MetalFarm.BP_MetalFarm_C", OnMetalFarmCreated)
 
-    -- Start the loop
-    RunUsingDelay()
-end
+-- Start the loop
+RunUsingDelay()
 
 --#endregion

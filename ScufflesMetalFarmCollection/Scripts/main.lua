@@ -12,6 +12,7 @@ local defaultOutputName = "%o"
 local config = require("config")
 
 local metalFarms = {}
+local lockersWithCorrectLabel = {}
 
 local function log(msg)
     print(string.format("[%s] %s\n", ModName, msg))
@@ -81,27 +82,148 @@ end
 
 local function transferItems(farm, farmInventory)
 
+    if not farm or not farm:IsValid() or not farmInventory or not farmInventory:IsValid() or not FindAllOf then
+        return false
+    end
+
+    if #lockersWithCorrectLabel <=0 then
+        log("No valid target lockers found with the correct label.")
+        return false
+    end
+
+    local ok, itemsToTransfer = pcall(function() return farmInventory:GetItems() end)
+
+    if not ok or not itemsToTransfer then
+        log(string.format("Error accessing farm inventory items. ok: %b, not itemsToTransfer: %b", ok, not itemsToTransfer))
+        return false
+    end
+
+    for _, rawItem in ipairs(itemsToTransfer) do
+        local innerItem = rawItem:get()
+        
+        if not innerItem or not innerItem:IsValid() then
+            log("Invalid item found in farm inventory. Skipping item.")
+            goto continue
+        end
+        --[[
+        --This block is for logging and we don't need it all the time.
+        if innerItem.ItemType then
+            local innerItemTypeOk, innerItemTypeName = pcall(function() return innerItem.ItemType:GetFName():ToString() end)
+            if innerItemTypeOk and innerItemTypeName then
+                log(string.format("Found item in farm inner inventory: %s", innerItemTypeName))
+            end
+        end
+        ]]
+
+        for _, locker in ipairs(lockersWithCorrectLabel) do
+            if locker.currentItemCount >= locker.maxItems then
+                goto lockerContinue
+            end
+
+            -- MoveItemBetweenInventories doesn't error out, but it still fails to transfer the item. We will need to try another transfer mechanism.
+            
+            local okTransfer, err = pcall(function() return farmInventory:MoveItemBetweenInventories(innerItem.ItemId, innerItem.InventoryId, locker.inventoryid) end)
+
+            if not okTransfer then
+                log("Error transferring item: " .. tostring(err))
+            else
+                locker.currentItemCount = locker.currentItemCount + 1
+
+                local displayName = nil
+
+                pcall(function() displayName = innerItem.ItemType.Name:ToString() end)
+
+                if displayName then
+                    log(string.format("Transferred item '%s' to locker '%s'. Current count: %d/%d", displayName, locker.label, locker.currentItemCount, locker.maxItems))
+                end
+                break
+            end
+            
+            ::lockerContinue::
+        end
+        ::continue::
+    end
+    return true
+end
+
+local function CollectFarm(farm)
     if not farm or not farm:IsValid() then
         return
     end
 
-    if not farmInventory or not farmInventory:IsValid() then
+    local growers = farm.SeedGrowerComponents
+    
+    if not growers or #growers == 0 then
         return
     end
 
+    for i = 1, #growers do
+        local grower = growers[i]            
+        if grower and grower:IsValid() and grower.HasFullyRipenedSeed() then
+            local inventory = farm.InventoryComponent
+
+            if inventory and inventory:IsValid() then
+                local succeeded = transferItems(farm, inventory)
+                if succeeded then
+                    
+                end
+            end
+        end
+    end
+end
+
+local function CollectAllFarms()
+    if not metalFarms or #metalFarms == 0 then
+        return
+    end
+
+    for _, farm in ipairs(metalFarms) do
+        CollectFarm(farm)
+    end
+end
+
+local function RegisterFarms()
     if not FindAllOf then
         log("FindAllOf function not found. Is ue4ss installed?")
         return
     end
 
-    local locA = farm:K2_GetActorLocation()
-    log(string.format("Transferring items from farm inventory at location (%.2f, %.2f, %.2f) to nearby lockers...", locA.X, locA.Y, locA.Z))
+    log("Registering metal farms...")
     
+    --reset metalFarms to ensure we don't keep duplicates if this function is called multiple times for some reason
+    metalFarms = {}
+
+    local foundFarms = FindAllOf("SN2MetalFarm")
+   
+    if not foundFarms or #foundFarms == 0 then
+        log("No metal farms found.")
+        return
+    end
+
+    for _, farm in ipairs(foundFarms) do
+        if not farm or not farm:IsValid() then
+            log("Invalid farm found. Skipping...")
+            goto continue
+        end
+
+        --metalFarms[#metalFarms + 1] = farm
+
+        table.insert(metalFarms, farm)
+        local locA = farm:K2_GetActorLocation()
+        log(string.format("Registered metal farm at location (%.2f, %.2f, %.2f)", locA.X, locA.Y, locA.Z))
+        
+        ::continue::
+    end
+end
+
+local function RegisterLockers()
     local containerSource = { class = "SN2Locker", getInventory = function(locker) return locker.Inventory end, hasLabel = true}
 
-    local targetLockers = {}
+    --Clear lockersWithCorrectLabel to ensure we don't keep duplicates if this function is called multiple times for some reason
+    lockersWithCorrectLabel = {}
 
     local lockerActors = FindAllOf(containerSource.class)
+
     if not lockerActors then
         log("No Lockers found.")
         return
@@ -109,131 +231,119 @@ local function transferItems(farm, farmInventory)
 
     for _, lockerActor in ipairs(lockerActors) do
         if not lockerActor or not lockerActor:IsValid() then
+            log("Invalid locker found. Skipping...")
             goto continue
         end
 
-        local distance = GetDistance(farm, lockerActor)
-        --look for lockers within 10000 unreal units (100 meters) that have a label starting with the default output name
-        if distance and distance <= 10000 then
-            local ok, inventory = pcall(function () return containerSource.getInventory(lockerActor) end)
+        local ok, inventory = pcall(function () return containerSource.getInventory(lockerActor) end)
 
-            if ok and inventory and inventory:IsValid() then
-                local rawLabel = nil
-                --NOTE: This differs from how QuickSort behaves due to having only the one type of source.
-                local ok2, label = pcall(function() return GetActorLabel(lockerActor) end)
-
-                if ok2 and label then
-                    rawLabel = label
-                end
-
-                if rawLabel and rawLabel:sub(1, #defaultOutputName) == defaultOutputName then
-                    
-                    local okMax, maxItems = pcall(function() return inventory.MaxItems end)
-                    local okItems, items = pcall(function() return inventory:GetItems() end)
-
-                    if not okMax or not maxItems or not okItems or not items then
-                        goto continue
-                    end
-
-                    local currentItemCount = #items
-
-                    if currentItemCount < maxItems then
-                        table.insert(targetLockers, {inventory = inventory, inventoryid = inventory.InventoryId,label = rawLabel, currentItemCount = currentItemCount, maxItems = maxItems})
-                    end
-                end
-            end
-        end
-        ::continue::
-    end
-
-    if #targetLockers <=0 then
-        log("No valid target lockers found near farm.")
-        return
-    end
-
-    local ok, itemsToTransfer = pcall(function() return farmInventory:GetItems() end)
-
-    if not ok or not itemsToTransfer then
-        log(string.format("Error accessing farm inventory items. ok: %b, not itemsToTransfer: %b", ok, not itemsToTransfer))
-        return
-    end
-
-    for _, rawItem in ipairs(itemsToTransfer) do
-        local innerItem = rawItem:get()
-
-        for _, locker in ipairs(targetLockers) do
-            if locker.currentItemCount >= locker.maxItems then
-                goto lockerContinue
-            end
-
-            local okTransfer, err = pcall(function() return farmInventory:MoveItemBetweenInventories(innerItem.ItemId, farmInventory.InventoryId, locker.inventory.Inventory) end)
-
-            if not okTransfer then
-                log("Error transferring item: " .. tostring(err))
-            else
-                locker.currentItemCount = locker.currentItemCount + 1
-                break
-            end
-            ::lockerContinue::
-        end
-        ::continue::
-    end
-end
-
-local function CollectAllFarms()
-    log("Collecting metal farms...")
-    if not FindAllOf then
-        log("FindAllOf function not found. Is ue4ss installed?")
-        return
-    end
-
-    local farms = FindAllOf("SN2MetalFarm")
-
-    if not farms then
-        log("No metal farms found.")
-        return
-    end
-
-    for _, farm in ipairs(farms) do
-        if not farm or not farm:IsValid() then
-            log("Invalid farm found. Skipping...")
+        if not ok or not inventory or not inventory:IsValid() then
+            log("Error accessing locker inventory. Skipping locker.")
             goto continue
         end
-
-        local growers = farm.SeedGrowerComponents
         
-        if not growers or #growers == 0 then
-            log("No SeedGrowerComponents found for farm. Skipping...")
+        local rawLabel = nil
+        --NOTE: This differs from how QuickSort behaves due to having only the one type of source.
+        local ok2, label = pcall(function() return GetActorLabel(lockerActor) end)
+
+        if ok2 and label then
+            rawLabel = label
+        else
+            log("Error accessing locker label. Skipping locker.")
             goto continue
         end
 
-        for i = 1, #growers do
-            local grower = growers[i]            
-            if grower and grower:IsValid() and grower.HasFullyRipenedSeed() then
-                local locA = farm:K2_GetActorLocation()
-                log(string.format("Starting collection check for farm at location (%.2f, %.2f, %.2f)", locA.X, locA.Y, locA.Z))
-                --local harvestAmount = grower.GetRipenedAmount()
-
-                --if harvestAmount and harvestAmount > 0 then                    
-                --end
-                local inventory = farm.InventoryComponent
-
-                if inventory and inventory:IsValid() then
-                    transferItems(farm, inventory)
-                else
-                    log(string.format("No valid inventory found for farm at location (%.2f, %.2f, %.2f). Skipping...", locA.X, locA.Y, locA.Z))
-                end
-            end
+        if IsNilOrEmpty(rawLabel) then
+            log("Locker label is nil. Skipping locker.")
+            goto continue
         end
 
+        if rawLabel:sub(1, #defaultOutputName) ~= defaultOutputName then
+            log(string.format("Locker label '%s' does not start with default output name '%s'. Skipping locker.", rawLabel, defaultOutputName))
+            goto continue
+        end
+
+        local okItemCount, inventoryItems = pcall(function() return lockerActor.inventory:GetItems() end)
+        
+        if not okItemCount or not inventoryItems then
+            log("Error accessing locker inventory items. Skipping locker.")
+            goto continue
+        end
+
+        local okMaxItems, maxItems = pcall(function() return lockerActor.inventory.MaxItems end)
+
+        if not okMaxItems or not maxItems then
+            log("Error accessing locker inventory max items. Skipping locker.")
+            goto continue
+        end
+
+        table.insert(lockersWithCorrectLabel, {inventory = inventory, inventoryid = inventory.InventoryId,label = rawLabel, currentItemCount = #inventoryItems, maxItems = maxItems})
+        
+        
+        local locA = lockerActor:K2_GetActorLocation()
+        log(string.format("Registered locker at location (%.2f, %.2f, %.2f)", locA.X, locA.Y, locA.Z))
+        
         ::continue::
     end
+
 end
 
+RegisterHook("/Script/Engine.PlayerController:ClientRestart", function()
+    ExecuteWithDelay(3000, function()
+        RegisterFarms()
+        RegisterLockers()
+    end)
+end)
+
+RegisterHook("/Script/Engine.Actor:K2_DestroyActor", function(Context)
+    local destroyedActor = Context:get()
+
+    if not destroyedActor or not destroyedActor:IsValid() then
+        return
+    end
+
+    for i, farm in ipairs(metalFarms) do
+        if farm == destroyedActor then
+            log(string.format("Metal farm at location (%.2f, %.2f, %.2f) was destroyed. Removing from collection.", farm:K2_GetActorLocation().X, farm:K2_GetActorLocation().Y, farm:K2_GetActorLocation().Z))
+            table.remove(metalFarms, i)
+            break
+        end
+    end
+end)
+
+RegisterHook("/Script/UMG.EditableText:SetText", function(Context, Params)
+    local signComponent = Context:get()
+    local lockerActor = signComponent:GetOwner()
+    
+    -- Params.NewText contains the FText structure submitted by the player
+    local newTextString = Params.NewText:get():ToString()
+    local oldTextString = Params.OldText:get():ToString()
+    
+    -- Ensure we are dealing with a locker (filters out signs, beacons, beacons etc.)
+    if lockerActor then
+        local actorName = lockerActor:GetClass():GetName()
+        if string.find(actorName, "Locker") then
+            log(string.format("Sign text changed on actor '%s'. Old text: '%s', New text: '%s'", lockerActor:GetName(), oldTextString, newTextString))
+            RegisterLockers() -- Re-register lockers to update our list of valid targets based on the new label text
+        end
+    end
+end)
+
+NotifyOnNewObject("/Game/Blueprints/Farming/BP_MetalFarm.BP_MetalFarm_C", function(NewObject)
+    ExecuteWithDelay(100,function()
+        RegisterFarms()
+    end)
+end)
+
+NotifyOnNewObject("/Game/Blueprints/World/ResourceDeposits/BP_Resource_MetalFarmSeed.BP_Resource_MetalFarmSeed_C", function(NewObject)
+    ExecuteWithDelay(100,function()
+        RegisterFarms()
+    end)
+end)
+
+--[[
 LoopAsync(1000, function()
-    log("Beginning metal farm collection process...")
     if not ModRef then
-            log("ModRef not found. Is this being run in the context of a ue4ss mod?")
         return
     end
 
@@ -246,12 +356,17 @@ LoopAsync(1000, function()
     end
 
     if config.Enabled then
-        log("Automatic collection enabled. Collecting farms...")
         ExecuteInGameThread(CollectAllFarms)
-    else
-        log("Automatic collection disabled. Set 'Enabled' to true in SN2ModSettings to enable.")
     end
 end
 )
+]]--
+local function RunUsingDelay()
+    if config.Enabled then
+        ExecuteInGameThread(CollectAllFarms)
+    end
+    ExecuteWithDelay(1000, RunUsingDelay) -- Schedule the next execution after 1 second
+end
 
+RunUsingDelay() -- Start the loop
 --#endregion

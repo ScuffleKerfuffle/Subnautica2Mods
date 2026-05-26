@@ -14,6 +14,7 @@ local defaultOutputName = "%o"
 
 local config = require("config")
 
+local containerSource = { class = "SN2Locker", getInventory = function(locker) return locker.Inventory end, hasLabel = true}
 local metalFarms = {}
 local lockersWithCorrectLabel = {}
 
@@ -81,13 +82,19 @@ end
 
 --#region Actor Registrations
 
+local function RegisterFarm(farm)
+    if not farm or not farm:IsValid() then
+        return
+    end
+
+    table.insert(metalFarms, farm)
+end
+
 local function RegisterFarms()
     if not FindAllOf then
         Log("FindAllOf function not found. Is ue4ss installed?")
         return
     end
-
-    Log("Registering metal farms...")
 
     --reset metalFarms to ensure we don't keep duplicates if this function is called multiple times for some reason
     metalFarms = {}
@@ -95,94 +102,82 @@ local function RegisterFarms()
     local foundFarms = FindAllOf("SN2MetalFarm")
 
     if not foundFarms or #foundFarms == 0 then
-        Log("No metal farms found.")
         return
     end
 
     for _, farm in ipairs(foundFarms) do
-        if not farm or not farm:IsValid() then
-            Log("Invalid farm found. Skipping...")
-            goto continue
-        end
-
-        table.insert(metalFarms, farm)
-        -- local locA = farm:K2_GetActorLocation()
-        -- Log(string.format("Registered metal farm at location (%.2f, %.2f, %.2f)", locA.X, locA.Y, locA.Z))
-
-        ::continue::
+        RegisterFarm(farm)
     end
 end
 
-local function RegisterLockers()
-    local containerSource = { class = "SN2Locker", getInventory = function(locker) return locker.Inventory end, hasLabel = true}
+--Handles registering a given locker.
+--NOTE: This differs from how QuickSort behaves due to having only the one type of source.
+local function RegisterLocker(lockerActor)
+    if not lockerActor or not lockerActor:IsValid() then
+            Log("Invalid locker found. Skipping...")
+            return
+        end
 
+        local okInventory, inventory = pcall(function () return containerSource.getInventory(lockerActor) end)
+
+        if not okInventory or not inventory or not inventory:IsValid() then
+            return
+        end
+
+        local rawLabel = nil
+
+        local okLabel, label = pcall(function() return GetActorLabel(lockerActor) end)
+
+        if okLabel and label then
+            rawLabel = label
+        else
+            return
+        end
+
+        if IsNilOrEmpty(rawLabel) then
+            return
+        end
+
+        if rawLabel:sub(1, #defaultOutputName) ~= defaultOutputName then
+            return
+        end
+
+        local okItemCount, inventoryItems = pcall(function() return lockerActor.inventory:GetItems() end)
+
+        if not okItemCount or not inventoryItems then
+            return
+        end
+
+        local okMaxItems, maxItems = pcall(function() return lockerActor.inventory.MaxItems end)
+
+        if not okMaxItems or not maxItems then
+            return
+        end
+
+        local okFullName, fullName = pcall(function() return lockerActor:GetFullName() end)
+
+        if not okFullName or not fullName then
+            return
+        end
+
+        table.insert(lockersWithCorrectLabel, {fullName = fullName, inventory = inventory, inventoryid = inventory.InventoryId,label = rawLabel, currentItemCount = #inventoryItems, maxItems = maxItems})
+end
+
+--Finds and attempts to register every locker (via containerSource) in the world. Only lockers with the correct label format will be registered.
+--If we want other kinds of containers (such as tailing chests), we can extend this function in the future by adding new container sources.
+local function RegisterLockers()
     --Clear lockersWithCorrectLabel to ensure we don't keep duplicates if this function is called multiple times for some reason
     lockersWithCorrectLabel = {}
 
     local lockerActors = FindAllOf(containerSource.class)
 
     if not lockerActors then
-        Log("No Lockers found.")
         return
     end
 
-    --NOTE: This differs from how QuickSort behaves due to having only the one type of source.
     for _, lockerActor in ipairs(lockerActors) do
-        if not lockerActor or not lockerActor:IsValid() then
-            Log("Invalid locker found. Skipping...")
-            goto continue
-        end
-
-        local ok, inventory = pcall(function () return containerSource.getInventory(lockerActor) end)
-
-        if not ok or not inventory or not inventory:IsValid() then
-            Log("Error accessing locker inventory. Skipping locker.")
-            goto continue
-        end
-
-        local rawLabel = nil
-
-        local ok2, label = pcall(function() return GetActorLabel(lockerActor) end)
-
-        if ok2 and label then
-            rawLabel = label
-        else
-            Log("Error accessing locker label. Skipping locker.")
-            goto continue
-        end
-
-        if IsNilOrEmpty(rawLabel) then
-            --Log("Locker label is nil. Skipping locker.")
-            goto continue
-        end
-
-        if rawLabel:sub(1, #defaultOutputName) ~= defaultOutputName then
-            --Log(string.format("Locker label '%s' does not start with default output name '%s'. Skipping locker.", rawLabel, defaultOutputName))
-            goto continue
-        end
-
-        local okItemCount, inventoryItems = pcall(function() return lockerActor.inventory:GetItems() end)
-
-        if not okItemCount or not inventoryItems then
-            Log("Error accessing locker inventory items. Skipping locker.")
-            goto continue
-        end
-
-        local okMaxItems, maxItems = pcall(function() return lockerActor.inventory.MaxItems end)
-
-        if not okMaxItems or not maxItems then
-            Log("Error accessing locker inventory max items. Skipping locker.")
-            goto continue
-        end
-
-        table.insert(lockersWithCorrectLabel, {inventory = inventory, inventoryid = inventory.InventoryId,label = rawLabel, currentItemCount = #inventoryItems, maxItems = maxItems})
-
-        --local locA = lockerActor:K2_GetActorLocation()
-        --Log(string.format("Registered locker at location (%.2f, %.2f, %.2f)", locA.X, locA.Y, locA.Z))
-
-        ::continue::
+        RegisterLocker(lockerActor)
     end
-    Log(string.format("Finished registering lockers. Found %d lockers with correct label.", #lockersWithCorrectLabel))
 end
 
 --#endregion
@@ -317,7 +312,7 @@ local function CollectFarm(farm)
 
     local growers = farm.SeedGrowerComponents
 
-    if not growers or #growers == 0 then
+    if not growers or not growers:IsValid() or #growers == 0 then
         return
     end
 
@@ -360,34 +355,43 @@ end
 
 --#region Handler Methods
 
---This is intended to catch when a farm or locker is destroyed, so we can remove it from our collection and avoid trying to collect from it in the future.
-local function OnActorDestroyed(Context)
+--This does get called whenever the builder tool is destroying something, but it's necessary 
+--to catch when a farm or locker is destroyed so we can remove it from our collections and 
+--avoid trying to interact with invalid actors.
+local function OnBuilderTargetDestroyed(Tool, Target)
+    local targetActor = Target:get()
 
-    local destroyedActor = Context:get()
-
-    if not destroyedActor or not destroyedActor:IsValid() then
+    if not targetActor or not targetActor:IsValid() then
         return
     end
 
+    local targetFullName = targetActor:GetFullName()
+
+    --Note for the next version: Maybe we can determine whether the passed-in actor is a farm or locker before looping through both collections? 
+    --Would save some cycles, but it's a bit more complex to implement.
     for i, farm in ipairs(metalFarms) do
-        if farm == destroyedActor then
-            Log(string.format("Metal farm at location (%.2f, %.2f, %.2f) was destroyed. Removing from collection.", farm:K2_GetActorLocation().X, farm:K2_GetActorLocation().Y, farm:K2_GetActorLocation().Z))
+        local farmFullName = farm:GetFullName()
+
+        if farmFullName == targetFullName then
             table.remove(metalFarms, i)
-            break
+            return
         end
     end
 
     for i, locker in ipairs(lockersWithCorrectLabel) do
-        if locker and locker.inventory and locker.inventory:GetOwner() == destroyedActor then
-            Log(string.format("Locker '%s' at location (%.2f, %.2f, %.2f) was destroyed. Removing from collection.", locker.label, destroyedActor:K2_GetActorLocation().X, destroyedActor:K2_GetActorLocation().Y, destroyedActor:K2_GetActorLocation().Z))
+        local lockerFullName = locker.fullName
+
+        if lockerFullName == targetFullName then
             table.remove(lockersWithCorrectLabel, i)
-            break
+            return
         end
     end
 end
 
 --This is intended to catch when a game starts or is loaded.
 --The delayed start is to give the farms and lockers a chance to load in.
+--Need to test whether this is still needed. OnNewObject notifications
+--might catch this now.
 local function OnClientRestart()
     ExecuteWithDelay(3000, function()
         RegisterFarms()
@@ -395,15 +399,25 @@ local function OnClientRestart()
     end)
 end
 
+--This is intended to catch when a new locker is created OR when an existing locker is partially deconstructed and then 
+--reconstructed. In both cases, we want to check if the locker is valid and add it to our collection if so.
+--Note for Posterity: As of the first release of SN2, Lockers do not keep their labels
+--when they are partially deconstructed and then reconstructed. This means that a newly-reconstructed
+--locker will never be a viable target, but if that ever changes, this will still handle it.
+local function OnLockerCreated(lockerActor)
+    RegisterLocker(lockerActor)
+end
+
 --This is intended to catch when a new metal farm is created, so we can add it to our collection and start collecting from it.
-local function OnMetalFarmCreated(NewObject)
-    ExecuteWithDelay(100,function()
-        RegisterFarms()
-    end)
+local function OnMetalFarmCreated(metalFarmActor)
+    RegisterFarm(metalFarmActor)
 end
 
 --This is intended to catch when a locker label is changed, so we can update our list of valid lockers to transfer to based on the new label text.
 local function OnTextChanged(Context, Params)
+    --Note for the future; maybe dig into the passed-in parameters to see
+    --if we can use the actual locker and (un)register it directly. This
+    --uses a lot of cycles in really large games.
         ExecuteWithDelay(100,function()
             RegisterLockers()
         end)
@@ -421,9 +435,10 @@ end
 
 --Register all hooks and notifications
 RegisterHook("/Script/Engine.PlayerController:ClientRestart", OnClientRestart)
-RegisterHook("/Script/Engine.Actor:K2_DestroyActor", OnActorDestroyed)
+RegisterHook("/Script/Subnautica2.SN2BuilderTool:OnTargetDestroyed", OnBuilderTargetDestroyed)
 RegisterHook("/Script/UWEUserGeneratedContent.UWEUGCComponent:ServerSetPlayerText", OnTextChanged)
-NotifyOnNewObject("/Game/Blueprints/Farming/BP_MetalFarm.BP_MetalFarm_C", OnMetalFarmCreated)
+NotifyOnNewObject("/Script/Subnautica2.SN2MetalFarm", OnMetalFarmCreated)
+NotifyOnNewObject("/Script/Subnautica2.SN2Locker", OnLockerCreated)
 
 -- Start the loop
 RunUsingDelay()

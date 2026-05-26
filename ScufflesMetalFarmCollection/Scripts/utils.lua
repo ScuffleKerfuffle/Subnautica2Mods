@@ -1,3 +1,4 @@
+local ModName = "ScufflesMetalFarmCollection"
 
 function Log(msg)
     print(string.format("[%s] %s\n", ModName, msg))

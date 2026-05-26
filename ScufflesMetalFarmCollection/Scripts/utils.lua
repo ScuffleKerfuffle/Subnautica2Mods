@@ -1,4 +1,8 @@
 
+function Log(msg)
+    print(string.format("[%s] %s\n", ModName, msg))
+end
+
 --Checks whether a string is nil or empty
 function  IsNilOrEmpty(textToCheck)
     if textToCheck == nil or textToCheck == "" then

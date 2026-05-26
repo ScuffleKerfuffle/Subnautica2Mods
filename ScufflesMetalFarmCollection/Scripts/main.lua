@@ -80,6 +80,35 @@ end
 
 --#region Farm Collection Logic
 
+local function GetSeedItem(farmInventory)
+    if not farmInventory or not farmInventory:IsValid() then
+        return nil
+    end
+
+    local okItems, itemsToTransfer = pcall(function() return farmInventory:GetItems() end)
+
+    if not okItems or not itemsToTransfer or #itemsToTransfer == 0 then
+        return nil
+    end
+    
+    local seedItem = itemsToTransfer[1]:get()
+
+    if not seedItem or not seedItem:IsValid() then
+        return nil
+    end
+
+    return seedItem
+end
+
+local function ResetFarm(farmInventory, seedItem)
+    if not farmInventory or not farmInventory:IsValid() then
+        return false
+    end
+
+    farmInventory:RemoveItemTypeFromInventory(seedItem.ItemType, 1)
+    farmInventory:AddItemTypeToInventory(seedItem.ItemType, 1)
+end
+
 local function transferItems(farm, farmInventory)
 
     if not farm or not farm:IsValid() or not farmInventory or not farmInventory:IsValid() or not FindAllOf then
@@ -146,6 +175,30 @@ local function transferItems(farm, farmInventory)
     return true
 end
 
+local function AddSeedItemsToLockers(seedItem)
+    if not seedItem or not seedItem:IsValid() then
+        return false
+    end
+
+    for _, locker in ipairs(lockersWithCorrectLabel) do
+        if locker.currentItemCount >= locker.maxItems then
+            goto lockerContinue
+        end
+
+        local ok = pcall(function() return locker.inventory:AddItemTypeToInventory(seedItem.ItemType, 1) end)
+
+        if ok then
+            log(string.format("Added seed item '%s' to locker '%s' during collection. Current count: %d/%d", seedItem.ItemType.Name:ToString(), locker.label, locker.currentItemCount + 1, locker.maxItems))
+            break
+        else
+            log(string.format("Error adding seed item '%s' to locker '%s' during collection.", seedItem.ItemType.Name:ToString(), locker.label))            
+            break
+        end
+        
+        ::lockerContinue::
+    end
+end
+
 local function CollectFarm(farm)
     if not farm or not farm:IsValid() then
         return
@@ -163,10 +216,20 @@ local function CollectFarm(farm)
             local inventory = farm.InventoryComponent
 
             if inventory and inventory:IsValid() then
-                local succeeded = transferItems(farm, inventory)
-                if succeeded then
-                    
+                local seedItem = GetSeedItem(inventory)
+
+                if not seedItem then
+                    log("No seed item found in farm inventory. Skipping collection for this grower.")
+                    break
                 end
+
+                transferItems(farm, inventory)
+                AddSeedItemsToLockers(seedItem)
+                local farmAddOk = pcall(function() return inventory:AddItemTypeToInventory(seedItem.ItemType, 1) end)
+                if not farmAddOk then
+                    log("Error adding seed item back to farm inventory after collection.")
+                end
+                
             end
         end
     end
@@ -335,11 +398,11 @@ NotifyOnNewObject("/Game/Blueprints/Farming/BP_MetalFarm.BP_MetalFarm_C", functi
     end)
 end)
 
-NotifyOnNewObject("/Game/Blueprints/World/ResourceDeposits/BP_Resource_MetalFarmSeed.BP_Resource_MetalFarmSeed_C", function(NewObject)
-    ExecuteWithDelay(100,function()
-        RegisterFarms()
-    end)
-end)
+-- NotifyOnNewObject("/Game/Blueprints/World/ResourceDeposits/BP_Resource_MetalFarmSeed.BP_Resource_MetalFarmSeed_C", function(NewObject)
+--     ExecuteWithDelay(100,function()
+--         RegisterFarms()
+--     end)
+-- end)
 
 --[[
 LoopAsync(1000, function()

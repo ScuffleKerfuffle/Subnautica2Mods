@@ -34,6 +34,7 @@ jobs:
         with:
           scheme: semver
           increment: patch
+          tag_prefix: MetalFarmCollection
       
       - name: Archive Release
         uses: TheDoctor0/zip-release@0.7.6
@@ -47,6 +48,6 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           artifacts: "release.zip"
-          tag: "MetalFarmCollection: ${{steps.version.outputs.version}}"
+          tag: "${{steps.version.outputs.prefixed-version}}"
           token: ${{ secrets.GITHUB_TOKEN }}
           replaceArtifacts: "true"

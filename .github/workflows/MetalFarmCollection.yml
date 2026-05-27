@@ -19,16 +19,32 @@ jobs:
   build:
     # The type of runner that the job will run on
     runs-on: ubuntu-latest
+    permissions:
+      contents: write #required to create releases
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Get Next Version
+        uses: reecetech/version-increment@2024.10.1
+        id: version
+        with:
+          scheme: semver
+          increment: patch
+      
       - name: Archive Release
         uses: TheDoctor0/zip-release@0.7.6
         with:
           type: 'zip'
           filename: 'release.zip'
-          exclusions: 'README.md'
+          exclusions: '*.md*'
           path: ScufflesMetalFarmCollection
       
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "release.zip"
+          tag: "MetalFarmCollection: ${{steps.version.outputs.version}}"

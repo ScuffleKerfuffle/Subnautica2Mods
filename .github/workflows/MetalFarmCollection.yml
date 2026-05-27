@@ -48,3 +48,5 @@ jobs:
         with:
           artifacts: "release.zip"
           tag: "MetalFarmCollection: ${{steps.version.outputs.version}}"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          replaceArtifacts: "true"

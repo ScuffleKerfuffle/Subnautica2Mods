@@ -413,6 +413,49 @@ local function OnMetalFarmCreated(metalFarmActor)
     RegisterFarm(metalFarmActor)
 end
 
+local function OnSeedAdded(farmActor, inventoryItem)
+    local farm = farmActor:get()
+    local lInventory = inventoryItem:get()
+
+    if not farm or not farm:IsValid() or not lInventory or not lInventory:IsValid() then
+        return
+    end
+
+    if not metalFarms or #metalFarms == 0 then
+        metalFarms = {farm}
+        return
+    else
+        for _, registeredFarm in ipairs(metalFarms) do
+            if registeredFarm:GetFullName() == farm:GetFullName() then
+                return
+            end
+        end
+
+        table.insert(metalFarms, farm)
+    end
+end
+
+local function OnSeedRemoved(farmActor, inventoryItem)
+    local farm = farmActor:get()
+    local lInventory = inventoryItem:get()
+
+    if not farm or not farm:IsValid() or not lInventory or not lInventory:IsValid() then
+        return
+    end
+
+    if not metalFarms or #metalFarms == 0 then
+        return
+    else
+        for i, registeredFarm in ipairs(metalFarms) do
+            if registeredFarm:GetFullName() == farm:GetFullName() then
+                table.remove(metalFarms, i)
+                return
+            end
+        end
+    end
+
+end
+
 --This is intended to catch when a locker label is changed, so we can update our list of valid lockers to transfer to based on the new label text.
 local function OnTextChanged(Context, Params)
     --Note for the future; maybe dig into the passed-in parameters to see
@@ -436,7 +479,11 @@ end
 --Register all hooks and notifications
 RegisterHook("/Script/Engine.PlayerController:ClientRestart", OnClientRestart)
 RegisterHook("/Script/Subnautica2.SN2BuilderTool:OnTargetDestroyed", OnBuilderTargetDestroyed)
+RegisterHook("/Script/Subnautica2.SN2MetalFarm:OnSeedAdded", OnSeedAdded)
+RegisterHook("/Script/Subnautica2.SN2MetalFarm:OnSeedRemoved", OnSeedRemoved)
 RegisterHook("/Script/UWEUserGeneratedContent.UWEUGCComponent:ServerSetPlayerText", OnTextChanged)
+
+
 NotifyOnNewObject("/Script/Subnautica2.SN2MetalFarm", OnMetalFarmCreated)
 NotifyOnNewObject("/Script/Subnautica2.SN2Locker", OnLockerCreated)
 
